@@ -30,8 +30,37 @@ That causes:
   network, gets rejected (TAU reject #9, attach reject #15), and puts Celcom on its
   "backoff forbidden PLMN" list. It never retries Celcom until airplane mode is toggled.
 
-This is a mid-band transmit problem, either hardware (antenna/PA path) or a
-KDDI-config power limit. It is not a missing-band problem: the KDDI hardware profile
+### Hardware, not region or modem software
+
+A controlled test with the phone locked to **B3 only** (log `0xB167` RACH MSG1, `0xB16E` PUSCH power control):
+
+| | B8 | B3 |
+|---|---|---|
+| Path loss the modem calculates | 102 dB | **142–149 dB** |
+| RSRP shown by Android | −86 dBm | −101 dBm |
+| Preambles answered (RAR) | n/a (connected fine) | **62 of 2,211 (2.8%)** |
+| Connection requests answered | 100% | 2 of 27 |
+| Ping loss | 0–3% | 91–100% |
+
+Every random-access procedure on B3 ramps its preamble power in steps up to the ceiling,
+then sends about 95 more preambles **at maximum power** before giving up, and the network
+still doesn't hear it. The modem's B3 path-loss estimate is about 30 dB worse than
+physically plausible for the RSRP it shows. The transmitter works and reaches its limit,
+but the signal doesn't get out of the phone on the mid bands. That points to a
+**unit hardware fault** in the 1.8/2.1 GHz antenna path (antenna flex, connector, or
+mid-band front-end/duplexer), not region support or Sony's modem code. The B1/B3 bands
+are core KDDI bands in Japan too, and the owner saw the same symptoms in Singapore
+and China.
+
+For a repair shop: *"No uplink on LTE B1/B3: PRACH ramps to max power and isn't heard,
+B3 path loss ≈145 dB vs 102 dB on B8. B8/B28 fine."*
+
+Not yet confirmed: whether the B3 ceiling equals the normal 23 dBm (the RACH log's power
+field units aren't documented). Comparing the same field on B8 would settle it.
+
+### Bands are not the issue
+
+It is not a missing-band problem: the KDDI hardware profile
 (`PDX245_K4`, rule `rf_bands_roam` for MCC 502) already enables every band Celcom
 uses (LTE B1/3/5/7/8/28…, NR NSA n78). Turning 5G on or off made no difference.
 
