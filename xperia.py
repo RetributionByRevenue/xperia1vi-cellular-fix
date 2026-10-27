@@ -43,7 +43,8 @@ def adb(*args, check=True):
 
 
 def sh(cmd):
-    return adb('shell', cmd, check=False)
+    r = subprocess.run(['adb', 'shell', cmd], capture_output=True, text=True)
+    return r.stdout + r.stderr
 
 
 def su(cmd):

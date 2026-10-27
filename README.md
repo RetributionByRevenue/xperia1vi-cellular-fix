@@ -86,7 +86,7 @@ lib/rrc.py         LTE RRC decoder (conn request/setup/release, re-establishment
                    + per-cell "uplink not heard" analysis
 lib/efs.py         modem EFS over DIAG: GET, OPEN/WRITE/CLOSE, UNLINK; band-mask helpers
 lib/mcfg.py        MCFG (.mbn) parser and policyman band_set decoder
-phone/celltest.sh  on-phone test: ping + download via rmnet, band samples (uses Termux curl)
+phone/celltest.sh  on-phone test: ping + download via rmnet, band samples (Termux curl or /system/bin/curl)
 phone/diagrun.sh   on-phone wrapper around /vendor/bin/diag_mdlog
 termux/            Termux:Boot scripts (start-hello → ~/.termux/boot/, hello-unlock.sh → ~/)
 captures/          saved .qmdl modem logs
