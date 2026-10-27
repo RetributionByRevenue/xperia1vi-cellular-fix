@@ -55,8 +55,16 @@ and China.
 For a repair shop: *"No uplink on LTE B1/B3: PRACH ramps to max power and isn't heard,
 B3 path loss ≈145 dB vs 102 dB on B8. B8/B28 fine."*
 
-Not yet confirmed: whether the B3 ceiling equals the normal 23 dBm (the RACH log's power
-field units aren't documented). Comparing the same field on B8 would settle it.
+**B8 vs B3, same RACH power field:** on B8 both preambles were answered on the first try
+at values 2 and 7. On B3, procedures start at 41–49, ramp in 2-unit steps (the 2 dB
+`powerRampingStep`), and stick at a ceiling of 50. The ~43-unit gap matches the 43 dB
+path-loss gap (102 vs 145 dB), so the field is in dB. Even at a full 23 dBm, a 145 dB path
+puts the signal at about −122 dBm at the cell, too weak to decode, so no B3-specific power
+cap is needed to explain the failure. The path-loss figure is a receive measurement,
+probably on the main (Tx/Rx) antenna, while Android's RSRP likely comes from the
+diversity antenna. So the phone *sees* B3 cells and keeps picking them, but its main
+1.8/2.1 GHz antenna path is about 30 dB down in both directions. The field's absolute dBm
+calibration is still unknown.
 
 ### Bands are not the issue
 
