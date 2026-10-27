@@ -1,0 +1,9 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Termux:Boot runs this in the background after the first unlock.
+# Start a Termux session running ~/hello-unlock.sh without bringing the
+# window to the front; it shows up in Termux's notification.
+termux-wake-lock
+am startservice --user 0 -n com.termux/com.termux.app.TermuxService \
+  -a com.termux.service_execute \
+  -d "file:///data/data/com.termux/files/home/hello-unlock.sh" \
+  --ez com.termux.execute.background false >/dev/null

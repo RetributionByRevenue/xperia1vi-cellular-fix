@@ -1,0 +1,4 @@
+captures/*
+!captures/.gitkeep
+__pycache__/
+*.pyc
