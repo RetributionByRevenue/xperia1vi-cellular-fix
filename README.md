@@ -76,7 +76,7 @@ uses (LTE B1/3/5/7/8/28…, NR NSA n78). Turning 5G on or off made no difference
 
 | Change | Where | Survives reboot / no root | Undo |
 |---|---|---|---|
-| **LTE band lock B8 + B28** | modem EFS `/nv/item_files/modem/mmode/lte_bandpref_Subscription01` = `0x0000000008000080` | yes (lives in the modem, survives factory reset) | `./xperia.py bandlock undo`, then reboot (needs root) |
+| **LTE band lock, low bands only: B5, 8, 12, 13, 17, 18, 19, 20, 26, 28** ("travel lock": works in Malaysia, the rest of Asia, and Canada; blocks the faulty mid bands) | modem EFS `/nv/item_files/modem/mmode/lte_bandpref` (SIM slot 1) and `lte_bandpref_Subscription01` (SIM slot 2) | yes (lives in the modem, survives factory reset) | `./xperia.py bandlock undo`, then reboot (needs root) |
 | Network mode LTE-only | Android, slot 1 | yes | Settings → Network → Preferred type, or `cmd phone set-allowed-network-types-for-users -s 1 10011111101111111111` |
 | APN `TuneTalk-celcom3g` (`celcom3g`, types `default,ia,supl`, IPv4v6), preferred | Android APN db | yes | Settings → APN |
 | APN `tunetalk` (disabled, don't use: Celcom rejects it and the phone loses service) | Android APN db | yes | delete in Settings → APN |
@@ -106,7 +106,7 @@ named by `ANDROID_SERIAL`. Commands marked *root* need the phone re-rooted first
 ./xperia.py capture stop            stop, save to captures/, and analyze          (root)
 ./xperia.py analyze FILE.qmdl       decode a capture: link events + per-cell uplink table
 ./xperia.py efs-get PATH SIZE       read a modem EFS item                         (root)
-./xperia.py bandlock status|apply 8 28|undo                                       (root)
+./xperia.py bandlock status|apply 5 8 12 13 17 18 19 20 26 28|undo   both SIM slots (root)
 ./xperia.py mcfg-bands [K4|A4|J4…]  band sets in a hardware modem profile         (root)
 ```
 

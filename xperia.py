@@ -30,7 +30,11 @@ import efs   # noqa: E402
 import rrc   # noqa: E402
 
 REMOTE = '/data/local/tmp/xc'
-BANDPREF = '/nv/item_files/modem/mmode/lte_bandpref_Subscription01'   # eSIM = subscription 1
+# LTE band preference per modem subscription (sub 0 = physical SIM slot, sub 1 = the eSIM here)
+BANDPREFS = {
+    'SIM slot 1': '/nv/item_files/modem/mmode/lte_bandpref',
+    'SIM slot 2': '/nv/item_files/modem/mmode/lte_bandpref_Subscription01',
+}
 SLOT = '1'                                                             # telephony slot of the eSIM
 
 
@@ -163,44 +167,48 @@ def cmd_efs_get(args):
         print(r)
 
 
-def bandlock_read():
-    for r in efs.replies(diag_once(efs.get(BANDPREF, 1, 8))):
+def bandlock_read(path):
+    for r in efs.replies(diag_once(efs.get(path, 1, 8))):
         if r['op'] == 'get':
             return r
     sys.exit('no reply from the modem')
 
 
+def bandlock_write(path, bands):
+    opened = [r for r in efs.replies(diag_once(efs.fs_open(path))) if r['op'] == 'open']
+    if not opened or opened[0]['errno']:
+        sys.exit('%s: open failed: %s' % (path, opened))
+    fd = opened[0]['fd']
+    res = efs.replies(diag_once(efs.fs_write(fd, efs.lte_mask(bands)) + efs.fs_close(fd)
+                                + efs.get(path, 2, 8)))
+    got = [r for r in res if r['op'] == 'get']
+    if not got or efs.mask_bands(got[0]['data']) != sorted(bands):
+        sys.exit('%s: verification FAILED: %s' % (path, res))
+    print('%-58s LTE %s  (verified)' % (path, sorted(bands)))
+
+
 def cmd_bandlock(args):
     action = args[0] if args else 'status'
     if action == 'status':
-        r = bandlock_read()
-        if r['errno'] == 2:
-            print('no band lock (file absent: all bands allowed)')
-        else:
-            print('errno %d, data %s -> LTE bands %s' % (r['errno'], r['data'].hex(), efs.mask_bands(r['data'])))
+        for name, path in BANDPREFS.items():
+            r = bandlock_read(path)
+            if r['errno'] == 2:
+                print('%-12s no band lock (all bands allowed)' % name)
+            else:
+                print('%-12s LTE bands %s' % (name, efs.mask_bands(r['data'])))
     elif action == 'apply':
         bands = [int(b) for b in args[1:]]
         if not bands or any(not 1 <= b <= 64 for b in bands):
             sys.exit('usage: bandlock apply BAND [BAND...]   (LTE bands 1-64)')
-        opened = [r for r in efs.replies(diag_once(efs.fs_open(BANDPREF))) if r['op'] == 'open']
-        if not opened or opened[0]['errno']:
-            sys.exit('open failed: %s' % opened)
-        fd = opened[0]['fd']
-        res = efs.replies(diag_once(efs.fs_write(fd, efs.lte_mask(bands)) + efs.fs_close(fd)
-                                    + efs.get(BANDPREF, 2, 8)))
-        for r in res:
-            print(r)
-        got = [r for r in res if r['op'] == 'get']
-        if got and efs.mask_bands(got[0]['data']) == sorted(bands):
-            print('\nband lock written: LTE %s. Reboot the phone for it to take effect.' % sorted(bands))
-        else:
-            sys.exit('\nverification FAILED - check the replies above')
+        for path in BANDPREFS.values():
+            bandlock_write(path, bands)
+        print('\nReboot the phone for it to take effect.')
     elif action == 'undo':
-        res = efs.replies(diag_once(efs.fs_unlink(BANDPREF) + efs.get(BANDPREF, 3, 8)))
-        for r in res:
-            print(r)
-        if any(r['op'] == 'get' and r['errno'] == 2 for r in res):
-            print('\nband lock removed. Reboot the phone for it to take effect.')
+        for name, path in BANDPREFS.items():
+            res = efs.replies(diag_once(efs.fs_unlink(path) + efs.get(path, 3, 8)))
+            gone = any(r['op'] == 'get' and r['errno'] == 2 for r in res)
+            print('%-12s %s' % (name, 'removed' if gone else 'FAILED: %s' % res))
+        print('\nReboot the phone for it to take effect.')
     else:
         sys.exit('usage: bandlock status | apply BAND... | undo')
 
