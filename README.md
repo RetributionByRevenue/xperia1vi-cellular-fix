@@ -1,7 +1,8 @@
 # Xperia 1 VI (KDDI SOG13): cellular fix and toolkit
 
 The investigation and fix from 2026-10-27 for poor and dropping mobile data on a
-KDDI Xperia 1 VI used in Malaysia, with the tools used to diagnose it.
+KDDI Xperia 1 VI used in Malaysia, with the tools used to diagnose it. Updated
+2026-11-19 with the fix for incoming calls going straight to voicemail (2G fallback).
 
 ## The problem
 
@@ -77,7 +78,8 @@ uses (LTE B1/3/5/7/8/28…, NR NSA n78). Turning 5G on or off made no difference
 | Change | Where | Survives reboot / no root | Undo |
 |---|---|---|---|
 | **LTE band lock, low bands only: B5, 8, 12, 13, 17, 18, 19, 20, 26, 28** ("travel lock": works in Malaysia, the rest of Asia, and Canada; blocks the faulty mid bands) | modem EFS `/nv/item_files/modem/mmode/lte_bandpref` (SIM slot 1) and `lte_bandpref_Subscription01` (SIM slot 2) | yes (lives in the modem, survives factory reset) | `./xperia.py bandlock undo`, then reboot (needs root) |
-| Network mode LTE-only | Android, slot 1 | yes | Settings → Network → Preferred type, or `cmd phone set-allowed-network-types-for-users -s 1 10011111101111111111` |
+| Network mode **automatic** (was LTE-only from 2026-10-27 to 2026-11-19; LTE-only silently killed incoming calls, see below) | Android, slot 1 | yes | `./xperia.py fallback on` sets it; LTE-only again: `cmd phone set-allowed-network-types-for-users -s 1 1000000000000` |
+| **2G network protection OFF** for the eSIM (2G allowed, needed for incoming calls) | Android, per SIM | yes | `./xperia.py fallback off`, or Settings → Network → Tune Talk → 2G network protection |
 | APN `TuneTalk-celcom3g` (`celcom3g`, types `default,ia,supl`, IPv4v6), preferred | Android APN db | yes | Settings → APN |
 | APN `tunetalk` (disabled, don't use: Celcom rejects it and the phone loses service) | Android APN db | yes | delete in Settings → APN |
 | Mobile data on for the eSIM | Android | yes | Settings |
@@ -91,6 +93,44 @@ A Sony firmware update that reloads the modem config might reset the band lock.
 If the B1/B3 problems come back, check with `./xperia.py bandlock status`.
 
 **If data gets stuck:** `./xperia.py recover` (or toggle airplane mode by hand).
+
+## Incoming calls went to voicemail (fixed 2026-11-19)
+
+Symptom: the phone never rang, but a few minutes later Tune Talk's SMS "You missed a
+call from …" and a voicemail notification arrived. Outgoing calls, SMS and data worked.
+VoLTE (IMS) was registered and looked healthy.
+
+Cause: Tune Talk delivers **incoming** calls on the circuit-switched side (the network
+pages the phone for a 2G/3G call, not a VoLTE call), so the phone has to do CSFB
+(circuit-switched fallback) to Celcom's **2G GSM 900** to pick the call up. Malaysia has
+no 3G any more. Two settings together made that impossible:
+
+1. the network mode was **LTE-only** (set in October to keep the phone off the broken
+   mid bands, which the band lock already does on its own), and
+2. Android 16's per-SIM **"2G network protection"** switch was on (the default). It is a
+   second filter (`enable_2g` reason) ANDed with the user's network mode, so even a
+   GSM-only user mode fails with `REQUEST_NOT_SUPPORTED` while it is on.
+
+With no 2G allowed the CS paging was never answered, and the network diverted the call
+to voicemail. The fix is automatic network mode **and** 2G protection off:
+`./xperia.py fallback on`. The LTE band lock stays as it is; it only affects LTE, and
+the GSM cell used for calls (ARFCN 1021, 900 MHz, about −67 dBm) is unaffected.
+
+Verified: a test call rang, was answered, and ran over CSFB on CelcomDigi GSM. Data
+pauses during the call (GSM only), and the phone returns to LTE B8 with VoLTE and data
+a few seconds after hang-up. Both settings are stored per SIM in the telephony database
+and survive reboots and airplane mode. A Sony firmware update or factory reset may
+reset them, and any "Force LTE only" type app will break calls again if it is run.
+
+Notes for debugging this class of problem:
+- `*#21#`/`*#62#` forwarding queries fail on this eSIM both over IMS Ut and over GSM
+  (RIL error 40), so you cannot check the forwarding rules from the phone.
+- MMI codes typed into the dialer via `am start -a android.intent.action.CALL` are
+  swallowed as "potentially dangerous"; use `ACTION_DIAL` and tap the call button.
+- There is no shell command for the 2G switch; `fallback on|off` flips it through the
+  Settings UI with `uiautomator dump` and `input tap`, and verifies the result. The
+  framework logs every change as `setAllowedNetworkTypes user=…,enable_2g=…` in
+  `logcat -b radio`, which `fallback status` decodes.
 
 ## Toolkit
 
@@ -108,7 +148,11 @@ named by `ANDROID_SERIAL`. Commands marked *root* need the phone re-rooted first
 ./xperia.py efs-get PATH SIZE       read a modem EFS item                         (root)
 ./xperia.py bandlock status|apply 5 8 12 13 17 18 19 20 26 28|undo   both SIM slots (root)
 ./xperia.py mcfg-bands [K4|A4|J4…]  band sets in a hardware modem profile         (root)
+./xperia.py fallback status|on|off  2G fallback for incoming calls: network mode + 2G switch
 ```
+
+`fallback on|off` drives the Settings app on the phone's screen (it must be unlocked);
+the eSIM's subscription id is 7 here, override with `XPERIA_SUBID`.
 
 Captures are saved to `captures/`, which is git-ignored because modem logs contain the
 SIM's IMSI. Don't publish `.qmdl` files.

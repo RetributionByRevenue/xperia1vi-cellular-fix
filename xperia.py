@@ -13,6 +13,9 @@
     ./xperia.py bandlock apply 8 28     lock LTE to these bands (needs reboot)       (root)
     ./xperia.py bandlock undo           remove the band lock (needs reboot)          (root)
     ./xperia.py mcfg-bands [VARIANT]    show band sets from a hardware MCFG (K4, A4…) (root)
+    ./xperia.py fallback status         network mode, 2G setting, current voice RAT  (no root)
+    ./xperia.py fallback on             automatic mode + 2G allowed: incoming calls ring via CSFB
+    ./xperia.py fallback off            block 2G again (Android's "2G network protection")
 
 Uses the only connected adb device, or the one named by ANDROID_SERIAL.
 """
@@ -36,6 +39,21 @@ BANDPREFS = {
     'SIM slot 2': '/nv/item_files/modem/mmode/lte_bandpref_Subscription01',
 }
 SLOT = '1'                                                             # telephony slot of the eSIM
+SUBID = os.environ.get('XPERIA_SUBID', '7')                            # subscription id of the eSIM
+
+# Network-type bitmasks for `cmd phone set-allowed-network-types-for-users` (binary string,
+# bit n = TelephonyManager.NETWORK_TYPE_BITMASK_* for network type n+1).
+AUTO_MASK = '10011111101111111111'     # 654335: everything (2G/3G/4G/5G), "automatic"
+LTE_ONLY_MASK = '1000000000000'        # 4096: LTE only
+NET_TYPES = ['GPRS', 'EDGE', 'UMTS', 'CDMA', 'EVDO_0', 'EVDO_A', '1xRTT', 'HSDPA', 'HSUPA', 'HSPA',
+             'IDEN', 'EVDO_B', 'LTE', 'EHRPD', 'HSPA+', 'GSM', 'TD_SCDMA', 'IWLAN', 'LTE_CA', 'NR']
+GEN = {'GPRS': '2G', 'EDGE': '2G', 'GSM': '2G', 'CDMA': '2G', '1xRTT': '2G',
+       'UMTS': '3G', 'HSDPA': '3G', 'HSUPA': '3G', 'HSPA': '3G', 'HSPA+': '3G', 'TD_SCDMA': '3G',
+       'LTE': '4G', 'LTE_CA': '4G', 'NR': '5G'}
+# The per-SIM switch in Settings → Network → SIM. Android 16 calls it "2G network protection"
+# (on = 2G blocked); Android 12-15 call it "Allow 2G" (on = 2G allowed).
+SWITCH_2G = {'2G network protection': False, 'Allow 2G': True}   # text -> meaning of checked=true
+UI_XML = '/data/local/tmp/xc_ui.xml'
 
 
 # ---------------------------------------------------------------- adb helpers
@@ -230,9 +248,115 @@ def cmd_mcfg_bands(args):
             ','.join('n%d' % b for b in d['nr5g_nsa']) or '-', ','.join('n%d' % b for b in d['nr5g_sa']) or '-'))
 
 
+def mask_summary(value):
+    """Decode a network-type bitmask (int) into '2G 3G 4G 5G (GPRS|EDGE|...)'."""
+    names = [n for i, n in enumerate(NET_TYPES) if value >> i & 1]
+    gens = sorted({GEN[n] for n in names if n in GEN})
+    return '%s (%s)' % (' '.join(gens) or 'nothing', '|'.join(names) or '-')
+
+
+def radio_log_masks():
+    """Latest (user, enable_2g) masks the framework logged for our subscription, or None."""
+    log = sh('logcat -b radio -d 2>/dev/null | grep -E "SubId%s,setAllowedNetworkTypes user=" | tail -1' % SUBID)
+    m = re.search(r'user=(\d+),enable_2g=(\d+)', log)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def ui_nodes():
+    sh('uiautomator dump %s >/dev/null 2>&1' % UI_XML)
+    return re.findall(r'<node [^>]*>', sh('cat ' + UI_XML))
+
+
+def node_attr(node, name):
+    m = re.search(r'\b%s="([^"]*)"' % name, node)
+    return m.group(1) if m else ''
+
+
+def node_bounds(node):
+    return [int(x) for x in re.findall(r'\d+', node_attr(node, 'bounds'))]   # x1 y1 x2 y2
+
+
+def find_2g_switch():
+    """Scroll the SIM's network settings page until the 2G row is visible.
+    Returns (switch_node, checked_means_allowed) or exits."""
+    for _ in range(6):
+        nodes = ui_nodes()
+        rows = [n for n in nodes if node_attr(n, 'text') in SWITCH_2G]
+        if rows:
+            allowed_when_checked = SWITCH_2G[node_attr(rows[0], 'text')]
+            y1, y2 = node_bounds(rows[0])[1], node_bounds(rows[0])[3]
+            switches = [n for n in nodes if node_attr(n, 'class') == 'android.widget.Switch']
+            near = [n for n in switches if y1 - 150 < (node_bounds(n)[1] + node_bounds(n)[3]) // 2 < y2 + 150]
+            if len(near) == 1 or (not near and len(switches) == 1):
+                return (near or switches)[0], allowed_when_checked
+            sys.exit('found the 2G row but not its switch: %s' % (switches or 'no switches on screen'))
+        if not any('Preferred network type' in node_attr(n, 'text') or 'Network' == node_attr(n, 'text')
+                   for n in nodes):
+            sys.exit('the network settings page did not open (is the screen unlocked?)')
+        sh('input swipe 540 1900 540 500 300; sleep 2')
+    sys.exit('no "2G network protection" / "Allow 2G" row on the network settings page')
+
+
+def set_2g(allow):
+    """Flip the per-SIM 2G switch in Settings through the UI (there is no shell command for it)."""
+    sh('input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_HOME; sleep 1; '
+       'am start -n com.android.settings/.Settings\\$MobileNetworkActivity --ei android.provider.extra.SUB_ID %s '
+       '>/dev/null 2>&1; sleep 4' % SUBID)
+    node, checked_means_allowed = find_2g_switch()
+    allowed = (node_attr(node, 'checked') == 'true') == checked_means_allowed
+    if allowed != allow:
+        b = node_bounds(node)
+        sh('input tap %d %d; sleep 3' % ((b[0] + b[2]) // 2, (b[1] + b[3]) // 2))
+        node, _ = find_2g_switch()
+        allowed = (node_attr(node, 'checked') == 'true') == checked_means_allowed
+    sh('input keyevent KEYCODE_HOME')
+    if allowed != allow:
+        sys.exit('2G switch did not change (now: 2G %s)' % ('allowed' if allowed else 'blocked'))
+    print('2G %s (Settings switch)' % ('allowed' if allowed else 'blocked'))
+
+
+def fallback_status():
+    user = sh('cmd phone get-allowed-network-types-for-users -s %s' % SLOT).strip().splitlines()
+    print('network mode (user):  %s' % (user[-1] if user else '?'))
+    masks = radio_log_masks()
+    if masks:
+        print('   user reason:       %s' % mask_summary(masks[0]))
+        print('   2G setting:        %s' % ('2G allowed' if masks[1] & 1 else '2G BLOCKED (2G network protection on)'))
+        print('   effective:         %s' % mask_summary(masks[0] & masks[1]))
+    else:
+        print('   2G setting:        unknown (nothing in the radio log yet; `fallback on` sets and shows it)')
+    reg = registry()
+    voice, data, ch, _ = serving(reg)
+    rat = re.findall(r'getRilVoiceRadioTechnology=([^,]*)', reg)
+    print('voice: %s on %s   data: %s' % (voice, rat[-1] if rat else '?', data))
+    if ch.isdigit():
+        gsm = 'GSM' in (rat[-1] if rat else '')
+        print('serving: %s' % ('GSM arfcn %s' % ch if gsm else '%s (earfcn %s)' % (rrc.band(int(ch)), ch)))
+
+
+def cmd_fallback(args):
+    """2G fallback for incoming calls. Tune Talk delivers incoming calls over the circuit-switched
+    side (no VoLTE paging), so the phone must be able to fall back to Celcom's 2G: automatic
+    network mode AND the 2G switch allowed. Either one alone sends calls to voicemail."""
+    action = args[0] if args else 'status'
+    if action == 'status':
+        fallback_status()
+    elif action == 'on':
+        print(sh('cmd phone set-allowed-network-types-for-users -s %s %s' % (SLOT, AUTO_MASK)).strip())
+        set_2g(True)
+        print(); fallback_status()
+        print('\nIncoming calls now ring through CSFB (the phone drops to 2G for the call and returns to LTE after).')
+    elif action == 'off':
+        set_2g(False)
+        print(); fallback_status()
+        print('\n2G is blocked again: incoming calls will go to voicemail on this network.')
+    else:
+        sys.exit('usage: fallback status | on | off')
+
+
 COMMANDS = {'status': cmd_status, 'watch': cmd_watch, 'recover': cmd_recover, 'test': cmd_test,
             'capture': cmd_capture, 'analyze': cmd_analyze, 'efs-get': cmd_efs_get,
-            'bandlock': cmd_bandlock, 'mcfg-bands': cmd_mcfg_bands}
+            'bandlock': cmd_bandlock, 'mcfg-bands': cmd_mcfg_bands, 'fallback': cmd_fallback}
 
 if __name__ == '__main__':
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
